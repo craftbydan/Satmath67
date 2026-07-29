@@ -4,6 +4,7 @@ import logging
 from openai import AsyncOpenAI
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app import crud, memory
 from app.config import OPENAI_API_KEY, OPENAI_MODEL
 from app.models import Conversation, Tenant, UserRole
 from app.tool_registry import execute_tool, tools_for_role
@@ -40,13 +41,17 @@ async def generate_reply(
     tenant: Tenant,
     session: AsyncSession,
     line_user_id: str,
+    user_text: str,
 ) -> str:
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is not set")
 
     client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-    messages: list[dict] = [{"role": "system", "content": system_prompt_for_role(role)}]
+    memories = await crud.list_memories(session, tenant.id, line_user_id)
+    system_prompt = system_prompt_for_role(role) + memory.format_memories_for_prompt(memories)
+
+    messages: list[dict] = [{"role": "system", "content": system_prompt}]
     messages.extend(
         {"role": _role_to_openai_role(m.role), "content": m.content} for m in history
     )
@@ -62,7 +67,11 @@ async def generate_reply(
         choice = response.choices[0].message
 
         if not choice.tool_calls:
-            return choice.content or ""
+            reply_text = choice.content or ""
+            await memory.extract_and_update_memories(
+                session, tenant.id, line_user_id, user_text, reply_text
+            )
+            return reply_text
 
         messages.append(
             {

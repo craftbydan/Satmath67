@@ -4,7 +4,7 @@ from typing import Optional
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.models import Conversation, RequestStatus, ScheduleRequest, Tenant, User, UserRole
+from app.models import Conversation, Memory, RequestStatus, ScheduleRequest, Tenant, User, UserRole
 
 
 async def get_tenant(session: AsyncSession, tenant_id: str) -> Optional[Tenant]:
@@ -135,3 +135,41 @@ async def get_recent_history(
     messages = list(result.all())
     messages.reverse()  # chronological order for the LLM
     return messages
+
+
+async def list_memories(session: AsyncSession, tenant_id: str, line_user_id: str) -> list[Memory]:
+    result = await session.exec(
+        select(Memory)
+        .where(Memory.tenant_id == tenant_id, Memory.line_user_id == line_user_id)
+        .order_by(Memory.updated_at.asc())
+    )
+    return list(result.all())
+
+
+async def add_memory(session: AsyncSession, tenant_id: str, line_user_id: str, content: str) -> Memory:
+    memory = Memory(tenant_id=tenant_id, line_user_id=line_user_id, content=content)
+    session.add(memory)
+    await session.commit()
+    await session.refresh(memory)
+    return memory
+
+
+async def update_memory(session: AsyncSession, memory_id: int, content: str) -> Optional[Memory]:
+    memory = await session.get(Memory, memory_id)
+    if memory is None:
+        return None
+    memory.content = content
+    memory.updated_at = datetime.now(timezone.utc)
+    session.add(memory)
+    await session.commit()
+    await session.refresh(memory)
+    return memory
+
+
+async def delete_memory(session: AsyncSession, memory_id: int) -> bool:
+    memory = await session.get(Memory, memory_id)
+    if memory is None:
+        return False
+    await session.delete(memory)
+    await session.commit()
+    return True

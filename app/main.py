@@ -118,7 +118,12 @@ async def webhook(request: Request, session: AsyncSession = Depends(get_session)
 
             try:
                 reply_text = await llm.generate_reply(
-                    user.role, history, tenant=tenant, session=session, line_user_id=user_id
+                    user.role,
+                    history,
+                    tenant=tenant,
+                    session=session,
+                    line_user_id=user_id,
+                    user_text=text,
                 )
             except Exception:
                 logger.exception("LLM generation failed for tenant=%s user=%s", tenant.id, user_id)

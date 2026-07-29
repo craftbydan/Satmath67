@@ -21,6 +21,7 @@ admin), and no cross-tenant data leakage.
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
 - [Database schema](#database-schema)
+- [Long-term memory](#long-term-memory)
 - [Tools & role-based permissions](#tools--role-based-permissions)
 - [Background jobs](#background-jobs)
 - [Deployment](#deployment)
@@ -45,6 +46,10 @@ one chat interface:
   availability, search a real Drive folder, log/confirm session requests,
   and (as an admin) book/cancel events or upload materials — via OpenAI
   function calling dispatched to the Google APIs server-side.
+- **Remembers across conversations** — beyond the rolling 10-message chat
+  window, pj extracts durable facts (preferences, weak topics, recurring
+  scheduling patterns) and carries them into every future conversation
+  with that user, even weeks later. See [Long-term memory](#long-term-memory).
 - **Runs unattended** — a daily admin digest and an hourly stale-request
   reminder run as scheduled jobs, independent of anyone messaging the bot.
 - **Deployable in one apply** — a `render.yaml` Blueprint provisions
@@ -182,6 +187,7 @@ erDiagram
     TENANTS ||--o{ USERS : has
     TENANTS ||--o{ CONVERSATIONS : has
     TENANTS ||--o{ SCHEDULE_REQUESTS : has
+    TENANTS ||--o{ MEMORIES : has
 
     TENANTS {
         string id PK "LINE destination ID"
@@ -217,15 +223,27 @@ erDiagram
         enum status "pending | confirmed | cancelled"
         datetime created_at
     }
+    MEMORIES {
+        int id PK
+        string tenant_id FK
+        string line_user_id
+        text content
+        datetime created_at
+        datetime updated_at
+    }
 ```
 
 - **conversations** is scoped to `(tenant_id, line_user_id)`, giving every
-  student their own isolated thread even within the same tenant — the LLM
-  only ever sees that pair's last 10 messages.
+  student their own isolated thread even within the same tenant — but only
+  the *last 10* rows per user are ever fed back to the LLM. This is
+  short-term/working memory, not long-term.
 - **schedule_requests** exists because students can't book the calendar
   directly: `request_session_time` logs a pending row here; an admin
   resolves it via `resolve_schedule_request`. It's also what the
   stale-reminder job scans.
+- **memories** is long-term memory — durable facts extracted from
+  conversation, independent of the 10-message window, injected into every
+  future system prompt for that user. See [Long-term memory](#long-term-memory).
 
 No Alembic migration chain yet — `init_db()` (run on every process start)
 creates missing tables via `SQLModel.metadata.create_all` and separately
@@ -233,6 +251,53 @@ creates missing tables via `SQLModel.metadata.create_all` and separately
 columns on a pre-existing `tenants` table. Safe to run repeatedly, on
 SQLite or Postgres. Worth replacing with real migrations before the
 schema churns much more.
+
+## Long-term memory
+
+The 10-message rolling window in `conversations` (Phase 2) is *working*
+memory — it forgets everything past the last 10 messages, so pj had no way
+to recall something a student mentioned last week. This adds real
+long-term memory: durable facts survive indefinitely and get pulled into
+every future conversation with that user, regardless of how long ago they
+were learned.
+
+**What it's based on:** [mem0](https://github.com/mem0ai/mem0)
+(`mem0ai/mem0`), the most widely-adopted open-source memory layer for AI
+agents (~48k GitHub stars, Apache 2.0). Its core pipeline — extract
+candidate facts from a conversation turn, reconcile them against what's
+already stored via an LLM call that decides **ADD / UPDATE / DELETE /
+NOOP** per fact, then persist and later re-inject the result — is exactly
+what's implemented in `app/memory.py`.
+
+**Why it's not a dependency on the `mem0ai` package:** its default local
+backend persists to an embedded Qdrant store at `/tmp/qdrant`. `/tmp` (and
+most container filesystems generally) is wiped on every redeploy/restart
+on Render and similar platforms — long-term memory would silently vanish
+on every deploy, which defeats the point. Running Qdrant properly would
+mean standing up a second stateful service just for this. We already have
+a Postgres database that *is* persisted correctly in production, and each
+user realistically accumulates a few dozen memory rows at most — nowhere
+near the scale where vector similarity search earns its complexity over
+"fetch every row for this user." So `app/memory.py` reimplements mem0's
+extract/reconcile/store/inject pattern as plain rows in our existing DB:
+zero new infrastructure, correctly durable by construction.
+
+**How it fires**, once per incoming message (`app/llm.py`):
+
+1. Before calling OpenAI, fetch all `memories` rows for `(tenant_id,
+   line_user_id)` and append them to the role's system prompt as "What
+   you remember about this user from past conversations."
+2. After pj's final reply is generated, send the latest exchange plus the
+   current memory list (with ids) to a small dedicated LLM call
+   (`app/memory.py::extract_and_update_memories`), which returns JSON
+   operations (`ADD`/`UPDATE`/`DELETE`/`NOOP`) and applies them.
+
+This is best-effort and fails silently (logged, not raised) if the
+extraction call errors — a memory-extraction hiccup should never break
+the actual reply to the user.
+
+**Debugging:** `python seed.py show-memories --tenant-id <...>
+--line-user-id <...>` prints everything currently stored for that user.
 
 ## Tools & role-based permissions
 
@@ -364,7 +429,11 @@ here so it's clear what "tested" means in this repo:
   free/busy-to-open-slots calendar math, the schedule-request workflow
   (request → list → resolve), both background jobs, the SQLite→Postgres
   URL normalization, the DB migration path against a pre-Phase-3 schema,
-  and the production `gunicorn` entrypoint actually serving `/health`.
+  the production `gunicorn` entrypoint actually serving `/health`, and the
+  long-term memory pipeline end-to-end (a fact extracted and stored in one
+  `generate_reply()` call was confirmed present in the system prompt of a
+  later, separate call — including an UPDATE/DELETE reconciliation case,
+  not just blind appending).
 - **What's mocked in those tests, and why:** the real LINE, OpenAI, and
   Google APIs are replaced with stand-ins returning canned responses —
   there's no way to exercise this repo's logic against your real
@@ -396,12 +465,13 @@ here so it's clear what "tested" means in this repo:
 ├── app/
 │   ├── config.py         # env vars: DATABASE_URL, OPENAI_*, GOOGLE_*, scheduler settings
 │   ├── db.py              # async SQLAlchemy engine/session, init_db() + light migration
-│   ├── models.py          # Tenant, User, Conversation, ScheduleRequest (SQLModel)
-│   ├── crud.py             # tenant lookup, get_or_create_user, message history, roster
+│   ├── models.py          # Tenant, User, Conversation, ScheduleRequest, Memory (SQLModel)
+│   ├── crud.py             # tenant lookup, get_or_create_user, message history, roster, memories
 │   ├── tool_registry.py    # role -> tool schemas, and the tool dispatcher
 │   ├── llm.py               # OpenAI call + role-based system prompts + tool-call loop
-│   ├── scheduler.py         # Phase 4 job bodies + APScheduler wiring
-│   └── main.py               # FastAPI app: /webhook, /health
+│   ├── memory.py             # long-term memory: extract/reconcile/store/inject (mem0-pattern)
+│   ├── scheduler.py           # Phase 4 job bodies + APScheduler wiring
+│   └── main.py                 # FastAPI app: /webhook, /health
 ├── tools/
 │   ├── google_auth.py    # shared Google service-account credentials/clients
 │   ├── calendar.py        # check_teacher_availability, update_calendar_slot, list_events_for_date
@@ -426,3 +496,11 @@ here so it's clear what "tested" means in this repo:
 - No automated `pytest` suite in-repo yet (see [Testing](#testing)).
 - Single shared OpenAI/Google credentials across all tenants — per-tenant
   API keys/quotas would be a natural next step for a larger deployment.
+- Memory extraction (`app/memory.py`) runs synchronously on every message,
+  adding one extra OpenAI call's worth of latency and cost per turn.
+  Fine at current volume; worth moving to a background task/queue if
+  message volume grows enough for that added latency to matter.
+- Memory reconciliation currently has no size cap — a very long-lived,
+  chatty user could in theory accumulate an unbounded number of memory
+  rows. Not a real concern yet, but worth revisiting (e.g. periodic
+  consolidation) at scale.

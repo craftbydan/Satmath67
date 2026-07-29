@@ -9,6 +9,7 @@ Examples:
         --google-calendar-id teacher@gmail.com --google-drive-folder-id 1AbCdEfGh...
     python seed.py set-admin --tenant-id U123abc... --line-user-id Uxyz...
     python seed.py list
+    python seed.py show-memories --tenant-id U123abc... --line-user-id Uxyz...
 """
 
 import argparse
@@ -16,6 +17,7 @@ import asyncio
 
 from sqlmodel import select
 
+from app import crud
 from app.config import LINE_DEFAULT_CHANNEL_ACCESS_TOKEN, LINE_DEFAULT_CHANNEL_SECRET
 from app.db import async_session, init_db
 from app.models import Tenant, User, UserRole
@@ -117,6 +119,18 @@ async def cmd_list(_args: argparse.Namespace) -> None:
             )
 
 
+async def cmd_show_memories(args: argparse.Namespace) -> None:
+    await init_db()
+    async with async_session() as session:
+        memories = await crud.list_memories(session, args.tenant_id, args.line_user_id)
+        if not memories:
+            print("No memories stored for this user yet.")
+            return
+        print(f"Memories for tenant={args.tenant_id} line_user_id={args.line_user_id}:")
+        for m in memories:
+            print(f"  - id={m.id} (updated {m.updated_at.isoformat()}): {m.content}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Seed/manage pj's tenant & user data")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -152,6 +166,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_set_admin.set_defaults(func=cmd_set_admin)
 
     sub.add_parser("list", help="List tenants and users").set_defaults(func=cmd_list)
+
+    p_show_memories = sub.add_parser(
+        "show-memories", help="Show the long-term memories stored for a (tenant, user)"
+    )
+    p_show_memories.add_argument("--tenant-id", required=True)
+    p_show_memories.add_argument("--line-user-id", required=True)
+    p_show_memories.set_defaults(func=cmd_show_memories)
 
     return parser
 
