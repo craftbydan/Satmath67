@@ -27,6 +27,11 @@ class Tenant(SQLModel, table=True):
     # it once more than one Official Account shares this service).
     channel_secret: str
     folder_path: Optional[str] = None
+    # Google Calendar ID and Drive folder ID this tenant's tools operate
+    # against. The shared service account (see README) must be granted
+    # access to both individually.
+    google_calendar_id: Optional[str] = None
+    google_drive_folder_id: Optional[str] = None
 
 
 class User(SQLModel, table=True):

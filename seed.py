@@ -5,6 +5,8 @@ Examples:
     python seed.py add-tenant --id U123abc... --name "Friend 1 Math Group" \\
         --channel-secret xxxx --channel-access-token yyyy --folder-path ./materials/friend1
     python seed.py add-tenant --from-env --id U123abc... --name "Friend 1 Math Group"
+    python seed.py add-tenant --id U123abc... --name "Friend 1 Math Group" \\
+        --google-calendar-id teacher@gmail.com --google-drive-folder-id 1AbCdEfGh...
     python seed.py set-admin --tenant-id U123abc... --line-user-id Uxyz...
     python seed.py list
 """
@@ -46,7 +48,15 @@ async def cmd_add_tenant(args: argparse.Namespace) -> None:
             tenant.name = args.name
             tenant.channel_secret = channel_secret
             tenant.channel_access_token = channel_access_token
-            tenant.folder_path = args.folder_path
+            # Only overwrite optional fields if explicitly passed, so
+            # re-running add-tenant for LINE credential rotation doesn't
+            # clear previously-set values.
+            if args.folder_path is not None:
+                tenant.folder_path = args.folder_path
+            if args.google_calendar_id is not None:
+                tenant.google_calendar_id = args.google_calendar_id
+            if args.google_drive_folder_id is not None:
+                tenant.google_drive_folder_id = args.google_drive_folder_id
         else:
             tenant = Tenant(
                 id=args.id,
@@ -54,6 +64,8 @@ async def cmd_add_tenant(args: argparse.Namespace) -> None:
                 channel_secret=channel_secret,
                 channel_access_token=channel_access_token,
                 folder_path=args.folder_path,
+                google_calendar_id=args.google_calendar_id,
+                google_drive_folder_id=args.google_drive_folder_id,
             )
         session.add(tenant)
         await session.commit()
@@ -90,7 +102,11 @@ async def cmd_list(_args: argparse.Namespace) -> None:
         tenants = (await session.exec(select(Tenant))).all()
         print("Tenants:")
         for t in tenants:
-            print(f"  - {t.id}  name={t.name!r}  folder_path={t.folder_path!r}")
+            print(
+                f"  - {t.id}  name={t.name!r}  folder_path={t.folder_path!r}  "
+                f"google_calendar_id={t.google_calendar_id!r}  "
+                f"google_drive_folder_id={t.google_drive_folder_id!r}"
+            )
 
         users = (await session.exec(select(User))).all()
         print("Users:")
@@ -113,6 +129,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_add_tenant.add_argument("--channel-secret")
     p_add_tenant.add_argument("--channel-access-token")
     p_add_tenant.add_argument("--folder-path", default=None)
+    p_add_tenant.add_argument(
+        "--google-calendar-id",
+        default=None,
+        help="Google Calendar ID (e.g. teacher@gmail.com) shared with the service account",
+    )
+    p_add_tenant.add_argument(
+        "--google-drive-folder-id",
+        default=None,
+        help="Google Drive folder ID shared with the service account",
+    )
     p_add_tenant.add_argument(
         "--from-env",
         action="store_true",

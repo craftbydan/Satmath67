@@ -40,6 +40,13 @@ async def get_or_create_user(
     return user
 
 
+async def list_students(session: AsyncSession, tenant_id: str) -> list[User]:
+    result = await session.exec(
+        select(User).where(User.tenant_id == tenant_id, User.role == UserRole.student)
+    )
+    return list(result.all())
+
+
 async def save_message(
     session: AsyncSession, tenant_id: str, line_user_id: str, role: str, content: str
 ) -> Conversation:

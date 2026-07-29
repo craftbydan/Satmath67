@@ -89,7 +89,9 @@ async def webhook(request: Request, session: AsyncSession = Depends(get_session)
             history = await crud.get_recent_history(session, tenant.id, user_id, limit=10)
 
             try:
-                reply_text = await llm.generate_reply(user.role, history)
+                reply_text = await llm.generate_reply(
+                    user.role, history, tenant=tenant, session=session
+                )
             except Exception:
                 logger.exception("LLM generation failed for tenant=%s user=%s", tenant.id, user_id)
                 reply_text = "Sorry, I'm having trouble responding right now. Please try again shortly."
