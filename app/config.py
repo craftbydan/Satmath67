@@ -21,7 +21,7 @@ DATABASE_URL = _normalize_database_url(
 )
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.4-nano")
 
 # Google service account used to call Calendar/Drive on behalf of every
 # tenant. Set exactly one of these. The service account's email must be

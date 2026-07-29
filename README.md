@@ -145,7 +145,7 @@ All configuration is environment variables (`app/config.py`), loaded from
 |---|---|---|
 | `DATABASE_URL` | no (defaults to local SQLite) | `sqlite+aiosqlite:///./pj.db` locally; a Postgres URL in production. `postgres://`/`postgresql://` URLs from Render/Supabase/Neon are auto-rewritten to `postgresql+asyncpg://` — paste them in as-is. |
 | `OPENAI_API_KEY` | **yes** | pj's LLM. From [platform.openai.com](https://platform.openai.com/api-keys). |
-| `OPENAI_MODEL` | no (default `gpt-4o-mini`) | Any tool-calling-capable chat model. |
+| `OPENAI_MODEL` | no (default `gpt-5.4-nano`) | Any tool-calling-capable chat model with JSON/structured output support (used for both chat and memory extraction). Nano was picked for cost/speed since scheduling is the priority use case, not deep math reasoning — bump to a stronger model if tutoring-answer quality matters more for your deployment. |
 | `GOOGLE_SERVICE_ACCOUNT_FILE` **or** `GOOGLE_SERVICE_ACCOUNT_JSON` | only if using Calendar/Drive tools | Set exactly one. File path locally; full key JSON as a single-line string in production (no persistent disk to put a file on). See below. |
 | `LINE_CHANNEL_SECRET` / `LINE_CHANNEL_ACCESS_TOKEN` | no | Convenience defaults for `seed.py add-tenant --from-env` only. Runtime webhook handling always reads per-tenant values from the `tenants` table — never these. |
 | `DIGEST_TIMEZONE` | no (default `UTC`) | IANA tz (e.g. `Asia/Bangkok`) the daily digest's "today" is computed in. |
