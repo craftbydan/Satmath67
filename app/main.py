@@ -12,10 +12,12 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhook import WebhookParser
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
+from sqlalchemy import text as sql_text
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app import crud, llm
-from app.db import get_session, init_db
+from app.config import ENABLE_SCHEDULER
+from app.db import engine, get_session, init_db
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("pj.webhook")
@@ -27,9 +29,35 @@ app = FastAPI(title="pj LINE Webhook")
 async def on_startup() -> None:
     await init_db()
 
+    # Off by default: see app/config.py ENABLE_SCHEDULER and the README's
+    # "Background jobs in production" section for why this shouldn't be
+    # turned on if the web service runs more than one instance/replica.
+    if ENABLE_SCHEDULER:
+        from app.scheduler import start_scheduler
+
+        start_scheduler()
+
+
+@app.on_event("shutdown")
+async def on_shutdown() -> None:
+    if ENABLE_SCHEDULER:
+        from app.scheduler import shutdown_scheduler
+
+        shutdown_scheduler()
+
 
 @app.get("/health")
 async def health() -> dict:
+    # Exercises the DB connection so uptime monitors (UptimeRobot, Better
+    # Stack, Render's own health check) catch a broken DB, not just "the
+    # process is up".
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(sql_text("SELECT 1"))
+    except Exception:
+        logger.exception("Health check DB connectivity failed")
+        raise HTTPException(status_code=503, detail="database unavailable")
+
     return {"status": "ok"}
 
 
@@ -90,7 +118,7 @@ async def webhook(request: Request, session: AsyncSession = Depends(get_session)
 
             try:
                 reply_text = await llm.generate_reply(
-                    user.role, history, tenant=tenant, session=session
+                    user.role, history, tenant=tenant, session=session, line_user_id=user_id
                 )
             except Exception:
                 logger.exception("LLM generation failed for tenant=%s user=%s", tenant.id, user_id)

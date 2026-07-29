@@ -1,0 +1,81 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+#
+# Provisions:
+#   - pj-postgres   managed Postgres database
+#   - pj-web        the FastAPI webhook service (public URL, LINE points here)
+#   - pj-digest     native Cron Job: daily 8:00 AM admin schedule digest
+#   - pj-stale      native Cron Job: hourly stale-session-request reminder
+#
+# Cron Jobs run `run_job.py` once per fire and exit -- no always-on worker
+# dyno needed, and no risk of duplicate-firing the way an in-process
+# APScheduler would if pj-web ever scales to multiple instances. See
+# README "Background jobs in production" for the alternative (worker.py)
+# used on platforms without native cron, e.g. Railway/Fly.
+
+databases:
+  - name: pj-postgres
+    plan: free
+    databaseName: pj
+    user: pj
+
+services:
+  - type: web
+    name: pj-web
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: pj-postgres
+          property: connectionString
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: LINE_CHANNEL_SECRET
+        sync: false
+      - key: LINE_CHANNEL_ACCESS_TOKEN
+        sync: false
+      - key: DIGEST_TIMEZONE
+        value: UTC
+      - key: STALE_REQUEST_HOURS
+        value: "24"
+      # Cron Jobs below own scheduling; keep this off here (see
+      # app/config.py). Only flip to "true" if you're deploying pj-web as
+      # your one-and-only always-on process without the Cron Jobs.
+      - key: ENABLE_SCHEDULER
+        value: "false"
+
+  - type: cron
+    name: pj-digest
+    env: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python run_job.py daily-digest
+    schedule: "0 8 * * *" # 8:00 AM UTC -- adjust for your tutor's timezone, or set DIGEST_TIMEZONE and keep the calendar lookup timezone-aware
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: pj-postgres
+          property: connectionString
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: DIGEST_TIMEZONE
+        value: UTC
+
+  - type: cron
+    name: pj-stale
+    env: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python run_job.py stale-reminder
+    schedule: "0 * * * *" # hourly
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: pj-postgres
+          property: connectionString
+      - key: STALE_REQUEST_HOURS
+        value: "24"

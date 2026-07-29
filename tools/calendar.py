@@ -7,6 +7,7 @@ Every call is executed in a worker thread via `asyncio.to_thread` since the
 import asyncio
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from tools.google_auth import get_calendar_service
 
@@ -125,3 +126,34 @@ def _update_calendar_slot_sync(
         return {"status": "cancelled", "event_id": event_id}
 
     return {"error": f"Unknown action {action!r}; expected 'book' or 'cancel'."}
+
+
+async def list_events_for_date(calendar_id: str, day: date, tz_name: str = "UTC") -> list[dict]:
+    """Used by the Phase 4 daily digest job to list a tenant's sessions for `day`."""
+    return await asyncio.to_thread(_list_events_for_date_sync, calendar_id, day, tz_name)
+
+
+def _list_events_for_date_sync(calendar_id: str, day: date, tz_name: str) -> list[dict]:
+    service = get_calendar_service()
+    tz = ZoneInfo(tz_name)
+    day_start = datetime(day.year, day.month, day.day, tzinfo=tz)
+    day_end = day_start + timedelta(days=1)
+
+    result = (
+        service.events()
+        .list(
+            calendarId=calendar_id,
+            timeMin=day_start.isoformat(),
+            timeMax=day_end.isoformat(),
+            singleEvents=True,
+            orderBy="startTime",
+        )
+        .execute()
+    )
+
+    events = []
+    for item in result.get("items", []):
+        start = item.get("start", {}).get("dateTime") or item.get("start", {}).get("date")
+        end = item.get("end", {}).get("dateTime") or item.get("end", {}).get("date")
+        events.append({"summary": item.get("summary", "(no title)"), "start": start, "end": end})
+    return events

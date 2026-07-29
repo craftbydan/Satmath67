@@ -14,6 +14,12 @@ class UserRole(str, enum.Enum):
     admin = "admin"
 
 
+class RequestStatus(str, enum.Enum):
+    pending = "pending"
+    confirmed = "confirmed"
+    cancelled = "cancelled"
+
+
 class Tenant(SQLModel, table=True):
     """One row per LINE Official Account. `id` is the LINE `destination` ID."""
 
@@ -45,6 +51,26 @@ class User(SQLModel, table=True):
     line_user_id: str = Field(index=True)
     role: UserRole = Field(default=UserRole.student)
     display_name: Optional[str] = None
+
+
+class ScheduleRequest(SQLModel, table=True):
+    """A student's requested session time, awaiting admin confirmation.
+
+    Students can't book the calendar directly (see role scoping in
+    tool_registry.py); this is the record the Phase 4 stale-session
+    reminder job scans for pending, un-actioned requests.
+    """
+
+    __tablename__ = "schedule_requests"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(foreign_key="tenants.id", index=True)
+    line_user_id: str = Field(index=True)
+    requested_start: datetime
+    requested_end: Optional[datetime] = None
+    note: Optional[str] = None
+    status: RequestStatus = Field(default=RequestStatus.pending, index=True)
+    created_at: datetime = Field(default_factory=_utcnow, index=True)
 
 
 class Conversation(SQLModel, table=True):

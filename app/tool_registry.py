@@ -6,12 +6,13 @@ touch the calling tenant's own calendar/Drive folder.
 """
 
 import logging
+from datetime import datetime
 from typing import Any
 
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app import crud
-from app.models import Tenant, UserRole
+from app.models import RequestStatus, Tenant, UserRole
 from tools import calendar as calendar_tools
 from tools import drive as drive_tools
 
@@ -110,16 +111,75 @@ TOOL_SCHEMAS: dict[str, dict] = {
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    "request_session_time": {
+        "type": "function",
+        "function": {
+            "name": "request_session_time",
+            "description": (
+                "Request a specific SAT Math tutoring session time. This does NOT book "
+                "anything -- it logs a pending request for an admin to confirm or "
+                "decline (students can't book the calendar directly)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "requested_start": {
+                        "type": "string",
+                        "description": "RFC3339 datetime you'd like to start",
+                    },
+                    "requested_end": {
+                        "type": "string",
+                        "description": "RFC3339 datetime you'd like to end, optional",
+                    },
+                    "note": {"type": "string", "description": "Any context for the admin, optional"},
+                },
+                "required": ["requested_start"],
+            },
+        },
+    },
+    "list_pending_requests": {
+        "type": "function",
+        "function": {
+            "name": "list_pending_requests",
+            "description": "List all pending (unconfirmed) session requests for this tenant. Admin only.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    "resolve_schedule_request": {
+        "type": "function",
+        "function": {
+            "name": "resolve_schedule_request",
+            "description": (
+                "Mark a pending session request as confirmed or cancelled. Does not "
+                "itself create a calendar event -- call update_calendar_slot separately "
+                "to actually book it. Admin only."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "request_id": {"type": "integer"},
+                    "status": {"type": "string", "enum": ["confirmed", "cancelled"]},
+                },
+                "required": ["request_id", "status"],
+            },
+        },
+    },
 }
 
 ROLE_TOOLS: dict[UserRole, list[str]] = {
-    UserRole.student: ["check_teacher_availability", "search_student_materials"],
+    UserRole.student: [
+        "check_teacher_availability",
+        "search_student_materials",
+        "request_session_time",
+    ],
     UserRole.admin: [
         "check_teacher_availability",
         "search_student_materials",
         "update_calendar_slot",
         "upload_material",
         "get_student_summary",
+        "list_pending_requests",
+        "resolve_schedule_request",
     ],
 }
 
@@ -135,6 +195,7 @@ async def execute_tool(
     session: AsyncSession,
     tenant: Tenant,
     role: UserRole,
+    line_user_id: str,
 ) -> dict:
     if name not in ROLE_TOOLS.get(role, []):
         logger.warning("Blocked tool call: role=%s tenant=%s tool=%s", role.value, tenant.id, name)
@@ -184,6 +245,59 @@ async def execute_tool(
                     for s in students
                 ],
             }
+
+        if name == "request_session_time":
+            try:
+                requested_start = datetime.fromisoformat(arguments["requested_start"])
+            except (KeyError, ValueError):
+                return {"error": "requested_start must be a valid RFC3339/ISO datetime."}
+            requested_end = None
+            if arguments.get("requested_end"):
+                try:
+                    requested_end = datetime.fromisoformat(arguments["requested_end"])
+                except ValueError:
+                    return {"error": "requested_end must be a valid RFC3339/ISO datetime."}
+            request = await crud.create_schedule_request(
+                session,
+                tenant.id,
+                line_user_id,
+                requested_start,
+                requested_end,
+                arguments.get("note"),
+            )
+            return {
+                "status": "requested",
+                "request_id": request.id,
+                "requested_start": arguments["requested_start"],
+            }
+
+        if name == "list_pending_requests":
+            pending = await crud.list_pending_schedule_requests(session, tenant.id)
+            return {
+                "tenant_id": tenant.id,
+                "pending_count": len(pending),
+                "requests": [
+                    {
+                        "id": r.id,
+                        "line_user_id": r.line_user_id,
+                        "requested_start": r.requested_start.isoformat(),
+                        "requested_end": r.requested_end.isoformat() if r.requested_end else None,
+                        "note": r.note,
+                        "created_at": r.created_at.isoformat(),
+                    }
+                    for r in pending
+                ],
+            }
+
+        if name == "resolve_schedule_request":
+            request_id = arguments.get("request_id")
+            status_str = arguments.get("status")
+            if request_id is None or status_str not in ("confirmed", "cancelled"):
+                return {"error": "request_id and status ('confirmed'|'cancelled') are required."}
+            updated = await crud.resolve_schedule_request(session, request_id, RequestStatus(status_str))
+            if updated is None or updated.tenant_id != tenant.id:
+                return {"error": f"No schedule request with id {request_id} for this tenant."}
+            return {"status": "updated", "request_id": updated.id, "new_status": updated.status.value}
 
         return {"error": f"Unknown tool '{name}'."}
     except KeyError as exc:

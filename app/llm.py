@@ -39,6 +39,7 @@ async def generate_reply(
     *,
     tenant: Tenant,
     session: AsyncSession,
+    line_user_id: str,
 ) -> str:
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is not set")
@@ -90,6 +91,7 @@ async def generate_reply(
                 session=session,
                 tenant=tenant,
                 role=role,
+                line_user_id=line_user_id,
             )
             messages.append(
                 {

@@ -1,9 +1,10 @@
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.models import Conversation, Tenant, User, UserRole
+from app.models import Conversation, RequestStatus, ScheduleRequest, Tenant, User, UserRole
 
 
 async def get_tenant(session: AsyncSession, tenant_id: str) -> Optional[Tenant]:
@@ -45,6 +46,69 @@ async def list_students(session: AsyncSession, tenant_id: str) -> list[User]:
         select(User).where(User.tenant_id == tenant_id, User.role == UserRole.student)
     )
     return list(result.all())
+
+
+async def list_admins(session: AsyncSession, tenant_id: str) -> list[User]:
+    result = await session.exec(
+        select(User).where(User.tenant_id == tenant_id, User.role == UserRole.admin)
+    )
+    return list(result.all())
+
+
+async def list_all_tenants(session: AsyncSession) -> list[Tenant]:
+    result = await session.exec(select(Tenant))
+    return list(result.all())
+
+
+async def create_schedule_request(
+    session: AsyncSession,
+    tenant_id: str,
+    line_user_id: str,
+    requested_start: datetime,
+    requested_end: Optional[datetime] = None,
+    note: Optional[str] = None,
+) -> ScheduleRequest:
+    request = ScheduleRequest(
+        tenant_id=tenant_id,
+        line_user_id=line_user_id,
+        requested_start=requested_start,
+        requested_end=requested_end,
+        note=note,
+    )
+    session.add(request)
+    await session.commit()
+    await session.refresh(request)
+    return request
+
+
+async def list_pending_schedule_requests(
+    session: AsyncSession, tenant_id: str, older_than_hours: float = 0
+) -> list[ScheduleRequest]:
+    """Pending requests created at least `older_than_hours` ago (0 = all pending)."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=older_than_hours)
+    result = await session.exec(
+        select(ScheduleRequest)
+        .where(
+            ScheduleRequest.tenant_id == tenant_id,
+            ScheduleRequest.status == RequestStatus.pending,
+            ScheduleRequest.created_at <= cutoff,
+        )
+        .order_by(ScheduleRequest.created_at.asc())
+    )
+    return list(result.all())
+
+
+async def resolve_schedule_request(
+    session: AsyncSession, request_id: int, status: RequestStatus
+) -> Optional[ScheduleRequest]:
+    request = await session.get(ScheduleRequest, request_id)
+    if request is None:
+        return None
+    request.status = status
+    session.add(request)
+    await session.commit()
+    await session.refresh(request)
+    return request
 
 
 async def save_message(
