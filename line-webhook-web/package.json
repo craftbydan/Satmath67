@@ -1,0 +1,9 @@
+{
+  "name": "line-webhook-web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lightweight LINE Messaging API webhook, deployable on Vercel.",
+  "engines": {
+    "node": ">=18"
+  }
+}
