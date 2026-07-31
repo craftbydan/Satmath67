@@ -150,7 +150,8 @@ All configuration is environment variables (`app/config.py`), loaded from
 | `LINE_CHANNEL_SECRET` / `LINE_CHANNEL_ACCESS_TOKEN` | no | Convenience defaults for `seed.py add-tenant --from-env` only. Runtime webhook handling always reads per-tenant values from the `tenants` table — never these. |
 | `DIGEST_TIMEZONE` | no (default `UTC`) | IANA tz (e.g. `Asia/Bangkok`) the daily digest's "today" is computed in. |
 | `STALE_REQUEST_HOURS` | no (default `24`) | How long a session request can sit unconfirmed before the reminder job flags it. |
-| `ENABLE_SCHEDULER` | no (default `false`) | Runs the in-process APScheduler inside the web process. Only safe on a single, unscaled instance — see [Background jobs](#background-jobs). |
+| `ENABLE_SCHEDULER` | no (default `false`) | Runs the in-process APScheduler inside the web process. Only safe on a single, unscaled instance — see [Background jobs](#background-jobs). No effect on Vercel (no persistent process to run it in). |
+| `CRON_SECRET` | only on Vercel | Protects the `/internal/cron/*` routes Vercel Cron Jobs call. Vercel auto-sends it back as `Authorization: Bearer <CRON_SECRET>` — see [Deployment](#deployment). |
 
 <details>
 <summary><strong>Setting up the Google service account</strong> (needed for Calendar/Drive tools)</summary>
@@ -415,6 +416,62 @@ The same `Dockerfile` runs anywhere. Without native cron:
 
 </details>
 
+<details>
+<summary><strong>Vercel</strong></summary>
+
+Vercel's Python runtime auto-detects `app/main.py`'s FastAPI `app` object as
+the entrypoint — no `api/` directory or extra wrapper file needed.
+`vercel.json` (already in the repo) sets a 60s `maxDuration` and registers
+two Cron Jobs. This deployment model is meaningfully different from
+Render/Railway, so a few things work differently here:
+
+- **No persistent process, ever.** Every request (including cron-triggered
+  ones) runs in a fresh/reused serverless invocation. `worker.py`
+  (always-on APScheduler) **cannot run on Vercel at all** — there's
+  nothing for it to stay alive in. Leave `ENABLE_SCHEDULER=false`; it's a
+  no-op here anyway.
+- **Scheduling uses Vercel Cron Jobs instead**, which call plain HTTP GET
+  routes on a schedule rather than running a script. `app/main.py` exposes
+  `GET /internal/cron/daily-digest` and `GET /internal/cron/stale-reminder`
+  for exactly this — they run the same `app/scheduler.py` job functions as
+  `run_job.py` does on Render, just invoked over HTTP instead of a CLI.
+  Both routes require `Authorization: Bearer <CRON_SECRET>`; Vercel adds
+  that header automatically once `CRON_SECRET` is set as a project env var
+  (see [Vercel's cron security docs](https://vercel.com/docs/cron-jobs/manage-cron-jobs#securing-cron-jobs)).
+- **SQLite will not work in production.** Vercel Functions have a
+  read-only filesystem (only `/tmp` is writable, and it's not shared or
+  guaranteed to persist between invocations) — `DATABASE_URL` **must**
+  point at a real Postgres instance (Neon, Supabase, Vercel Postgres,
+  etc.) from the start. There's no "just try it with SQLite first" option
+  here the way there is with `uvicorn --reload` locally.
+- **Hobby plan cron limits.** Free/Hobby accounts can only run a given
+  cron job once per day, with the exact minute not guaranteed (any time
+  within the specified hour). The hourly `stale-reminder` schedule in
+  `vercel.json` (`0 * * * *`) **needs a Pro plan** to actually run hourly
+  — on Hobby, either upgrade or change that schedule to something
+  once-daily (e.g. `0 9 * * *`) before deploying.
+
+**Steps:**
+
+1. Push the repo to GitHub/GitLab, then in the Vercel dashboard: **Add New
+   → Project**, import the repo. Vercel should detect the Python/FastAPI
+   framework preset automatically from `requirements.txt`.
+2. In Project Settings → Environment Variables, add: `DATABASE_URL` (a
+   real Postgres URL — see above), `OPENAI_API_KEY`,
+   `GOOGLE_SERVICE_ACCOUNT_JSON`, `CRON_SECRET` (any random 16+ character
+   string), and optionally `DIGEST_TIMEZONE` / `STALE_REQUEST_HOURS`.
+3. Deploy. Vercel shows your production URL
+   (`https://<project>.vercel.app`).
+4. Seed a tenant against that same `DATABASE_URL` from your machine, same
+   as the Render steps above, then point the LINE webhook at
+   `https://<project>.vercel.app/webhook`.
+5. Confirm the two Cron Jobs appear under Project Settings → Cron Jobs,
+   and check their logs after the first scheduled run (or trigger one
+   manually by `curl`-ing the route yourself with the right
+   `Authorization` header).
+
+</details>
+
 ## Testing
 
 There's no CI pipeline yet, but every code path below has been exercised
@@ -457,6 +514,9 @@ here so it's clear what "tested" means in this repo:
 | `/health` returns 503 | DB unreachable | Check `DATABASE_URL`, and that the Postgres instance is up |
 | Admins get every digest/reminder message twice | Both `ENABLE_SCHEDULER=true` *and* `worker.py`/Cron Jobs are running, or `worker.py` is running as more than one instance | Pick exactly one scheduling mode (see [Background jobs](#background-jobs)) and run it in exactly one place |
 | `ImportError`/`ModuleNotFoundError` on startup | Dependencies not installed in the active environment | `pip install -r requirements.txt` inside the activated venv |
+| Vercel: "This Serverless Function has crashed" (`FUNCTION_INVOCATION_FAILED`) | Almost always `DATABASE_URL` still pointing at SQLite (Vercel's filesystem can't persist it) or a missing/misconfigured env var — this generic page never shows the real traceback | Open the failing deployment → **Logs** in the Vercel dashboard for the actual Python exception; confirm `DATABASE_URL` is a real Postgres URL and every var in the [Configuration](#configuration) table is set |
+| Vercel Cron Job never fires, or fires at the wrong time | Hobby plan only supports once-daily crons with inexact timing | See the Hobby-plan note in [Deployment](#deployment) → Vercel; upgrade to Pro or reduce `stale-reminder`'s schedule to once daily |
+| Vercel: `/internal/cron/*` returns 401 | `CRON_SECRET` not set, or you're calling the route manually without the header | Set `CRON_SECRET` as a Vercel project env var (Vercel adds the header automatically for real cron triggers); for manual testing pass `-H "Authorization: Bearer <value>"` yourself |
 
 ## Project structure
 
@@ -471,7 +531,7 @@ here so it's clear what "tested" means in this repo:
 │   ├── llm.py               # OpenAI call + role-based system prompts + tool-call loop
 │   ├── memory.py             # long-term memory: extract/reconcile/store/inject (mem0-pattern)
 │   ├── scheduler.py           # Phase 4 job bodies + APScheduler wiring
-│   └── main.py                 # FastAPI app: /webhook, /health
+│   └── main.py                 # FastAPI app: /webhook, /health, /internal/cron/* (Vercel)
 ├── tools/
 │   ├── google_auth.py    # shared Google service-account credentials/clients
 │   ├── calendar.py        # check_teacher_availability, update_calendar_slot, list_events_for_date
@@ -482,6 +542,7 @@ here so it's clear what "tested" means in this repo:
 ├── Dockerfile
 ├── render.yaml                    # Render Blueprint: web service + Postgres + 2 Cron Jobs
 ├── Procfile                        # Railway/Heroku-style process types
+├── vercel.json                      # Vercel: maxDuration + Cron Jobs hitting /internal/cron/*
 └── .env.example
 ```
 

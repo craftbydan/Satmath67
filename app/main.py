@@ -1,5 +1,6 @@
 import json
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from linebot.v3.exceptions import InvalidSignatureError
@@ -16,34 +17,63 @@ from sqlalchemy import text as sql_text
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app import crud, llm
-from app.config import ENABLE_SCHEDULER
+from app.config import CRON_SECRET, ENABLE_SCHEDULER
 from app.db import engine, get_session, init_db
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("pj.webhook")
 
-app = FastAPI(title="pj LINE Webhook")
 
-
-@app.on_event("startup")
-async def on_startup() -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     await init_db()
 
     # Off by default: see app/config.py ENABLE_SCHEDULER and the README's
     # "Background jobs in production" section for why this shouldn't be
-    # turned on if the web service runs more than one instance/replica.
+    # turned on if the web service runs more than one instance/replica --
+    # including on serverless platforms (Vercel), where it does nothing
+    # useful anyway since there's no persistent process between requests.
+    # Use the /internal/cron/* routes below with Vercel Cron Jobs instead.
     if ENABLE_SCHEDULER:
-        from app.scheduler import start_scheduler
+        from app.scheduler import shutdown_scheduler, start_scheduler
 
         start_scheduler()
-
-
-@app.on_event("shutdown")
-async def on_shutdown() -> None:
-    if ENABLE_SCHEDULER:
-        from app.scheduler import shutdown_scheduler
-
+        yield
         shutdown_scheduler()
+    else:
+        yield
+
+
+app = FastAPI(title="pj LINE Webhook", lifespan=lifespan)
+
+
+def _check_cron_secret(request: Request) -> None:
+    """Vercel Cron Jobs send `Authorization: Bearer <CRON_SECRET>` automatically
+    when CRON_SECRET is set as a project env var. See README "Deploying to
+    Vercel" -- this same check also works for any other scheduler capable of
+    setting a custom header (e.g. a GitHub Actions workflow)."""
+    if not CRON_SECRET:
+        raise HTTPException(status_code=503, detail="CRON_SECRET is not configured")
+    if request.headers.get("authorization") != f"Bearer {CRON_SECRET}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+@app.get("/internal/cron/daily-digest")
+async def cron_daily_digest(request: Request) -> dict:
+    _check_cron_secret(request)
+    from app.scheduler import send_daily_digest
+
+    await send_daily_digest()
+    return {"status": "ok"}
+
+
+@app.get("/internal/cron/stale-reminder")
+async def cron_stale_reminder(request: Request) -> dict:
+    _check_cron_secret(request)
+    from app.scheduler import check_stale_requests
+
+    await check_stale_requests()
+    return {"status": "ok"}
 
 
 @app.get("/health")

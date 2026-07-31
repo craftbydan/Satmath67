@@ -51,3 +51,10 @@ STALE_REQUEST_HOURS = float(os.environ.get("STALE_REQUEST_HOURS", "24"))
 # (worker.py) -- running it in more than one process/replica at once means
 # every admin gets duplicate push messages.
 ENABLE_SCHEDULER = os.environ.get("ENABLE_SCHEDULER", "false").lower() == "true"
+
+# Shared secret protecting the /internal/cron/* routes (app/main.py). Set as
+# a Vercel project env var and Vercel automatically sends it back as
+# `Authorization: Bearer <CRON_SECRET>` on every Vercel Cron Job request --
+# see README "Deploying to Vercel". Not used by the Render/Railway paths
+# (run_job.py, worker.py), which don't go over HTTP at all.
+CRON_SECRET = os.environ.get("CRON_SECRET")
