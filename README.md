@@ -472,6 +472,58 @@ Render/Railway, so a few things work differently here:
 
 </details>
 
+<details>
+<summary><strong>$0/month: Render free tier + Neon + GitHub Actions (no Vercel, no paid VPS)</strong></summary>
+
+Every piece below has a genuine, indefinite free tier — no trial period,
+no credit card. The trade-off is a cold start of 30-60s after 15 minutes
+of no traffic, which the keep-alive step neutralizes in practice.
+
+**Why not just apply `render.yaml` as-is:** its `pj-postgres` database is
+Render's own free Postgres, which now **expires after 30 days** and gets
+deleted after a 14-day grace period unless you upgrade to paid — not
+actually free long-term. And Render's native Cron Jobs have no free tier
+at all (from $1/mo). This path swaps both of those out.
+
+1. **Database — [Neon](https://neon.tech)** (free forever, no pause, no
+   expiry, unlike Render's own free Postgres or Supabase's free tier which
+   pauses after 7 days of inactivity): create a project, copy its
+   connection string for `DATABASE_URL`.
+2. **Web service — Render free tier:** in the Render dashboard, **New →
+   Web Service** (not "Blueprint" — you don't want `render.yaml`'s
+   database/cron resources here), connect the repo, Docker runtime
+   (uses the existing `Dockerfile`), plan **Free**. Set env vars:
+   `DATABASE_URL` (your Neon string), `OPENAI_API_KEY`,
+   `GOOGLE_SERVICE_ACCOUNT_JSON`, `CRON_SECRET` (any random 16+ character
+   string), `healthCheckPath` = `/health` under Settings.
+3. **Keep it awake — [UptimeRobot](https://uptimerobot.com) free plan:**
+   add an HTTPS monitor for `https://<your-app>.onrender.com/health`,
+   interval 5 minutes (UptimeRobot's free-plan minimum, comfortably under
+   Render's 15-minute sleep threshold). This also gives you real uptime
+   alerting for free, and Render's free tier includes 750 instance-hours/
+   month — a full month is ~730 hours, so staying warm 24/7 this way
+   doesn't run you into the free-hour cap.
+4. **Cron — GitHub Actions** (`.github/workflows/cron.yml`, already in
+   this repo): calls the same `/internal/cron/daily-digest` and
+   `/internal/cron/stale-reminder` routes Vercel Cron Jobs would, just
+   from a scheduled workflow instead — these routes don't know or care
+   who's calling them. In your repo's Settings → Secrets and variables →
+   Actions, add:
+   - `PJ_APP_URL` = `https://<your-app>.onrender.com` (no trailing slash)
+   - `CRON_SECRET` = the same value you set on the Render service
+
+   GitHub Actions schedules are free and unlimited for public repos (2,000
+   free minutes/month on a private repo's free plan, and these jobs take
+   seconds), but are best-effort and can run a few minutes late under
+   load — fine for a digest/reminder.
+5. Same LINE webhook / Google service-account / tenant-seeding steps as
+   the Render section above, pointed at `https://<your-app>.onrender.com/webhook`.
+
+Total recurring cost: **$0**, as long as you stay within each service's
+free-tier limits (small-scale tutoring bot usage comfortably will).
+
+</details>
+
 ## Testing
 
 There's no CI pipeline yet, but every code path below has been exercised
@@ -531,11 +583,13 @@ here so it's clear what "tested" means in this repo:
 │   ├── llm.py               # OpenAI call + role-based system prompts + tool-call loop
 │   ├── memory.py             # long-term memory: extract/reconcile/store/inject (mem0-pattern)
 │   ├── scheduler.py           # Phase 4 job bodies + APScheduler wiring
-│   └── main.py                 # FastAPI app: /webhook, /health, /internal/cron/* (Vercel)
+│   └── main.py                 # FastAPI app: /webhook, /health, /internal/cron/* (cron-triggered by Vercel or GitHub Actions)
 ├── tools/
 │   ├── google_auth.py    # shared Google service-account credentials/clients
 │   ├── calendar.py        # check_teacher_availability, update_calendar_slot, list_events_for_date
 │   └── drive.py            # search_student_materials, upload_material
+├── .github/workflows/
+│   └── cron.yml               # free cron alternative: calls /internal/cron/* on a schedule
 ├── seed.py                  # CLI: init-db / add-tenant / set-admin / list
 ├── run_job.py                 # one-shot job runner (Render Cron Jobs / external cron)
 ├── worker.py                    # always-on job runner (platforms without native cron)

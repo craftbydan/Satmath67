@@ -1,0 +1,40 @@
+name: pj scheduled jobs
+
+# Free alternative to Render's paid Cron Jobs: calls the same
+# /internal/cron/* routes (app/main.py) that Vercel Cron Jobs call, just
+# from a GitHub Actions schedule instead. Works against any host (Render,
+# Railway, a VPS, ...) -- these routes don't know or care who's calling
+# them, only that the Authorization header matches CRON_SECRET.
+#
+# Required repo secrets (Settings -> Secrets and variables -> Actions):
+#   PJ_APP_URL    e.g. https://your-app.onrender.com  (no trailing slash)
+#   CRON_SECRET   must match the CRON_SECRET env var set on the deployed app
+#
+# Note: GitHub Actions schedules are best-effort and can run a few minutes
+# late under load -- fine for a digest/reminder, not for anything
+# time-critical.
+
+"on":
+  schedule:
+    - cron: "0 8 * * *" # daily digest -- 08:00 UTC; adjust for your tutor's timezone
+    - cron: "0 * * * *" # stale-request reminder -- hourly
+  workflow_dispatch: {} # lets you trigger both manually from the Actions tab
+
+jobs:
+  daily-digest:
+    if: github.event.schedule == '0 8 * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call /internal/cron/daily-digest
+        run: |
+          curl --fail-with-body -sS -X GET "${{ secrets.PJ_APP_URL }}/internal/cron/daily-digest" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"
+
+  stale-reminder:
+    if: github.event.schedule == '0 * * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call /internal/cron/stale-reminder
+        run: |
+          curl --fail-with-body -sS -X GET "${{ secrets.PJ_APP_URL }}/internal/cron/stale-reminder" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"
