@@ -4,9 +4,5 @@
     "app/main.py": {
       "maxDuration": 60
     }
-  },
-  "crons": [
-    { "path": "/internal/cron/daily-digest", "schedule": "0 8 * * *" },
-    { "path": "/internal/cron/stale-reminder", "schedule": "0 * * * *" }
-  ]
+  }
 }
