@@ -473,7 +473,7 @@ Render/Railway, so a few things work differently here:
 </details>
 
 <details>
-<summary><strong>$0/month: Render free tier + Neon + GitHub Actions (no Vercel, no paid VPS)</strong></summary>
+<summary><strong>$0/month: Render free tier + Neon/Supabase + GitHub Actions (no Vercel, no paid VPS)</strong></summary>
 
 Every piece below has a genuine, indefinite free tier — no trial period,
 no credit card. The trade-off is a cold start of 30-60s after 15 minutes
@@ -485,15 +485,25 @@ deleted after a 14-day grace period unless you upgrade to paid — not
 actually free long-term. And Render's native Cron Jobs have no free tier
 at all (from $1/mo). This path swaps both of those out.
 
-1. **Database — [Neon](https://neon.tech)** (free forever, no pause, no
-   expiry, unlike Render's own free Postgres or Supabase's free tier which
-   pauses after 7 days of inactivity): create a project, copy its
-   connection string for `DATABASE_URL`.
+1. **Database — [Neon](https://neon.tech) or [Supabase](https://supabase.com),
+   either works** (`DATABASE_URL`'s `postgres://`/`postgresql://` scheme is
+   normalized the same way regardless of provider — see `app/config.py`):
+   - **Neon:** free forever, no pause, no expiry.
+   - **Supabase:** free forever, but auto-pauses a project after 7 days
+     with *zero database activity* (query/API traffic, not dashboard
+     visits). Step 3 below pings `/health`, which runs a real `SELECT 1`
+     against the DB every 5 minutes — that resets the pause timer on its
+     own, so in practice this never actually pauses. If it ever does
+     (e.g. you turn off the uptime monitor for a week), un-pausing is one
+     click in the Supabase dashboard, ~30s.
+
+   Either way: create a project, copy its Postgres connection string into
+   `DATABASE_URL`.
 2. **Web service — Render free tier:** in the Render dashboard, **New →
    Web Service** (not "Blueprint" — you don't want `render.yaml`'s
    database/cron resources here), connect the repo, Docker runtime
    (uses the existing `Dockerfile`), plan **Free**. Set env vars:
-   `DATABASE_URL` (your Neon string), `OPENAI_API_KEY`,
+   `DATABASE_URL` (your Neon/Supabase string), `OPENAI_API_KEY`,
    `GOOGLE_SERVICE_ACCOUNT_JSON`, `CRON_SECRET` (any random 16+ character
    string), `healthCheckPath` = `/health` under Settings.
 3. **Keep it awake — [UptimeRobot](https://uptimerobot.com) free plan:**
@@ -502,7 +512,8 @@ at all (from $1/mo). This path swaps both of those out.
    Render's 15-minute sleep threshold). This also gives you real uptime
    alerting for free, and Render's free tier includes 750 instance-hours/
    month — a full month is ~730 hours, so staying warm 24/7 this way
-   doesn't run you into the free-hour cap.
+   doesn't run you into the free-hour cap. (Same ping also prevents a
+   Supabase pause, per step 1.)
 4. **Cron — GitHub Actions** (`.github/workflows/cron.yml`, already in
    this repo): calls the same `/internal/cron/daily-digest` and
    `/internal/cron/stale-reminder` routes Vercel Cron Jobs would, just
